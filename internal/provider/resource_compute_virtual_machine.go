@@ -236,34 +236,46 @@ Virtual machines can be created using three different methods:
 					},
 				},
 			},
-			"os_network_adapter": {
-				Type:        schema.TypeList,
-				Description: "OS network adapters created from content lib item deployment or virtual machine clone.",
+			"network_adapter_managed": {
+				Type:        schema.TypeBool,
+				Description: "Manage network adapters for the virtual machine (disable to prevent conflicts with `cloudtemple_compute_network_adapter` resources).",
 				Optional:    true,
-				Computed:    true,
+				Default:     true,
+			},
+			"network_adapter": {
+				Type:        schema.TypeList,
+				Description: "Network adapters to create on the virtual machine.",
+				Optional:    true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						// In
 						"network_id": {
+							Type:         schema.TypeString,
+							Required:     true,
+							ValidateFunc: validation.IsUUID,
+						},
+						"type": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+						"mac_address": {
 							Type:     schema.TypeString,
 							Optional: true,
 							Computed: true,
-						},
-						"mac_address": {
-							Type:         schema.TypeString,
-							Optional:     true,
-							Computed:     true,
-							ComputedWhen: []string{"mac_type"},
 						},
 						"mac_type": {
 							Type:     schema.TypeString,
 							Optional: true,
-							Computed: true,
+							Default:  "ASSIGNED",
+							ValidateFunc: validation.StringInSlice([]string{
+								"MANUAL",
+								"ASSIGNED",
+							}, false),
 						},
 						"auto_connect": {
 							Type:     schema.TypeBool,
 							Optional: true,
-							Computed: true,
+							Default:  true,
 						},
 						"connected": {
 							Type:     schema.TypeBool,
@@ -277,10 +289,6 @@ Virtual machines can be created using three different methods:
 							Computed: true,
 						},
 						"name": {
-							Type:     schema.TypeString,
-							Computed: true,
-						},
-						"type": {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
@@ -508,11 +516,18 @@ Virtual machines can be created using three different methods:
 				}
 				return nil
 			}),
-			customdiff.ValidateChange("os_network_adapter", func(ctx context.Context, old, new, meta any) error {
-				o := len(old.([]interface{}))
-				n := len(new.([]interface{}))
-				if n > o && o > 0 {
-					return fmt.Errorf("new os_network_adapter blocks are not allowed if that exceeds the number of existing OS network adapters (%d > %d)", n, o)
+			customdiff.ValidateChange("network_adapter", func(ctx context.Context, old, new, meta any) error {
+				for i, oldNetworkAdapter := range old.([]interface{}) {
+					for _, newNetworkAdapter := range new.([]interface{}) {
+						oldNetworkAdapterId := oldNetworkAdapter.(map[string]interface{})["id"].(string)
+						newNetworkAdapterId := newNetworkAdapter.(map[string]interface{})["id"].(string)
+						oldNetworkAdapterType := oldNetworkAdapter.(map[string]interface{})["type"].(string)
+						newNetworkAdapterType := newNetworkAdapter.(map[string]interface{})["type"].(string)
+
+						if oldNetworkAdapterId == newNetworkAdapterId && oldNetworkAdapterType != newNetworkAdapterType {
+							return fmt.Errorf("expected value of network_adapter.%d.type cannot be changed, got %s", i, newNetworkAdapterType)
+						}
+					}
 				}
 				return nil
 			}),
@@ -620,16 +635,18 @@ func computeVirtualMachineCreate(ctx context.Context, d *schema.ResourceData, me
 		return diag.FromErr(err)
 	}
 
-	networkAdapters, err := c.Compute().NetworkAdapter().List(ctx, d.Id())
-	if err != nil {
-		return diag.Errorf("failed to retrieve OS network adapters: %s", err)
-	}
+	if d.Get("network_adapter_managed").(bool) {
+		srcNetworkAdapters, err := c.Compute().NetworkAdapter().List(ctx, d.Id())
+		if err != nil {
+			return diag.Errorf("failed to retrieve network adapters: %s", err)
+		}
 
-	// Overwrite with the desired config
-	osNetworkAdapters := updateNestedMapItems(d, flattenOSNetworkAdaptersData(networkAdapters), "os_network_adapter")
+		// Merge existing resources with the desired config
+		networkAdapters := mergeNestedMapItems(d, flattenNetworkAdaptersData(srcNetworkAdapters), "network_adapter")
 
-	if err := d.Set("os_network_adapter", osNetworkAdapters); err != nil {
-		return diag.FromErr(err)
+		if err := d.Set("network_adapter", networkAdapters); err != nil {
+			return diag.FromErr(err)
+		}
 	}
 
 	if len(d.Get("backup_sla_policies").(*schema.Set).List()) > 0 {
@@ -739,22 +756,25 @@ func computeVirtualMachineRead(ctx context.Context, d *schema.ResourceData, meta
 
 		sw.set("os_disk", osDisks)
 
-		osNetworkAdapters := []interface{}{}
-		for _, osNetworkAdapter := range d.Get("os_network_adapter").([]interface{}) {
-			if osNetworkAdapter == nil {
-				continue
+		if d.Get("network_adapter_managed").(bool) {
+			srcNetworkAdapters, err := c.Compute().NetworkAdapter().List(ctx, d.Id())
+			if err != nil {
+				return nil, fmt.Errorf("failed to retrieve network adapters: %s", err)
 			}
-			osNetworkAdapterId := osNetworkAdapter.(map[string]interface{})["id"].(string)
-			if osNetworkAdapterId != "" {
-				networkAdapter, err := c.Compute().NetworkAdapter().Read(ctx, osNetworkAdapterId)
-				if err != nil {
-					return nil, err
-				}
-				osNetworkAdapters = append(osNetworkAdapters, flattenOSNetworkAdapterData(networkAdapter))
-			}
+
+			sw.set("network_adapter", flattenNetworkAdaptersData(srcNetworkAdapters))
 		}
 
-		sw.set("os_network_adapter", osNetworkAdapters)
+		// Set somes states when running 'terraform import'
+		if d.Get("name") == "" {
+			srcNetworkAdapters, err := c.Compute().NetworkAdapter().List(ctx, d.Id())
+			if err != nil {
+				return nil, fmt.Errorf("failed to retrieve network adapters: %s", err)
+			}
+
+			sw.set("network_adapter_managed", true)
+			sw.set("network_adapter", flattenNetworkAdaptersData(srcNetworkAdapters))
+		}
 
 		readTags(ctx, sw, c, d.Id())
 
@@ -921,13 +941,59 @@ func updateVirtualMachine(ctx context.Context, d *schema.ResourceData, meta any,
 		}
 	}
 
-	if d.HasChange("os_network_adapter") {
-		for i, osNetworkAdapter := range d.Get("os_network_adapter").([]interface{}) {
-			if osNetworkAdapter == nil {
-				continue
+	if d.HasChange("network_adapter") && d.Get("network_adapter_managed").(bool) {
+		old, _ := d.GetChange("network_adapter")
+		src := d.Get("network_adapter")
+
+		// Find network adapters to delete
+		for _, oldNetworkAdapter := range old.([]interface{}) {
+			found := false
+			oldNetworkAdapterId := oldNetworkAdapter.(map[string]interface{})["id"].(string)
+			for _, srcNetworkAdapter := range src.([]interface{}) {
+				srcNetworkAdapterId := srcNetworkAdapter.(map[string]interface{})["id"].(string)
+				if oldNetworkAdapterId == srcNetworkAdapterId {
+					found = true
+					break
+				}
 			}
-			networkAdapter := osNetworkAdapter.(map[string]interface{})
-			if networkAdapter["id"].(string) != "" && d.HasChange(fmt.Sprintf("os_network_adapter.%d", i)) {
+
+			if !found {
+				activityId, err := c.Compute().NetworkAdapter().Delete(ctx, oldNetworkAdapterId)
+				if err != nil {
+					return diag.Errorf("failed to delete network adapter: %s", err)
+				}
+				if _, err = c.Activity().WaitForCompletion(ctx, activityId, getWaiterOptions(ctx)); err != nil {
+					return diag.Errorf("failed to delete network adapter, %s", err)
+				}
+			}
+		}
+
+		networkAdapters := []map[string]interface{}{}
+		for i, srcNetworkAdapter := range src.([]interface{}) {
+			networkAdapter := srcNetworkAdapter.(map[string]interface{})
+
+			if d.HasChange(fmt.Sprintf("network_adapter.%d", i)) {
+				if networkAdapter["id"].(string) == "" {
+					activityId, err := c.Compute().NetworkAdapter().Create(ctx, &client.CreateNetworkAdapterRequest{
+						VirtualMachineId: d.Id(),
+						MacAddress:       networkAdapter["mac_address"].(string),
+						NetworkId:        networkAdapter["network_id"].(string),
+						Type:             networkAdapter["type"].(string),
+					})
+					if err != nil {
+						return diag.Errorf("the network adapter could not be created: %s", err)
+					}
+					activity, err := c.Activity().WaitForCompletion(ctx, activityId, getWaiterOptions(ctx))
+					if err != nil {
+						return diag.Errorf("failed to create network adapter, %s", err)
+					}
+					if activity == nil || len(activity.ConcernedItems) == 0 || activity.ConcernedItems[0].ID == "" {
+						return diag.Errorf("failed to retrieve network adapter ID from activity, %s", activity.ID)
+					}
+
+					networkAdapter["id"] = activity.ConcernedItems[0].ID
+				}
+
 				macType := networkAdapter["mac_type"].(string)
 				macAddress := networkAdapter["mac_address"].(string)
 				if macType == "ASSIGNED" {
@@ -949,7 +1015,7 @@ func updateVirtualMachine(ctx context.Context, d *schema.ResourceData, meta any,
 					return diag.Errorf("failed to update network adapter, %s", err)
 				}
 
-				if d.HasChange(fmt.Sprintf("os_network_adapter.%d.connected", i)) {
+				if d.HasChange(fmt.Sprintf("network_adapter.%d.connected", i)) {
 					var msg string
 					var action func(context.Context, string) (string, error)
 					if networkAdapter["connected"].(bool) {
@@ -977,6 +1043,13 @@ func updateVirtualMachine(ctx context.Context, d *schema.ResourceData, meta any,
 						return diag.Errorf("failed to %s network adapter, %s", msg, err)
 					}
 				}
+			}
+
+			networkAdapters = append(networkAdapters, networkAdapter)
+
+			// Redefine network_adapter subresource
+			if err := d.Set("network_adapter", networkAdapters); err != nil {
+				return diag.FromErr(err)
 			}
 		}
 	}
@@ -1062,6 +1135,27 @@ func computeVirtualMachineDelete(ctx context.Context, d *schema.ResourceData, me
 	return nil
 }
 
+func mergeNestedMapItems(d *schema.ResourceData, nestedMapItems1 []interface{}, key string) []interface{} {
+	lenNestedMapItems := len(d.Get(key).([]interface{}))
+	if len(nestedMapItems1) > lenNestedMapItems {
+		lenNestedMapItems = len(nestedMapItems1)
+	}
+	nestedMaps := make([]interface{}, lenNestedMapItems)
+
+	copy(nestedMaps, nestedMapItems1)
+
+	for i, mapItems := range nestedMaps {
+		if mapItems == nil {
+			nestedMaps[i] = d.Get(fmt.Sprintf("%s.%d", key, i))
+			continue
+		}
+
+		nestedMaps[i] = updateMapItems(d, mapItems, key, i)
+	}
+
+	return nestedMaps
+}
+
 func updateNestedMapItems(d *schema.ResourceData, nestedMapItems []interface{}, key string) []interface{} {
 	nestedMaps := make([]interface{}, len(nestedMapItems))
 
@@ -1121,31 +1215,31 @@ func flattenOSDiskData(osDisk *client.VirtualDisk) interface{} {
 	return disk
 }
 
-func flattenOSNetworkAdaptersData(osNetworkAdapters []*client.NetworkAdapter) []interface{} {
-	if osNetworkAdapters != nil {
-		networkAdapters := make([]interface{}, len(osNetworkAdapters))
+func flattenNetworkAdaptersData(networkAdapters []*client.NetworkAdapter) []interface{} {
+	if networkAdapters != nil {
+		data := make([]interface{}, len(networkAdapters))
 
-		for i, osNetworkAdapter := range osNetworkAdapters {
-			networkAdapters[i] = flattenOSNetworkAdapterData(osNetworkAdapter)
+		for i, networkAdapter := range networkAdapters {
+			data[i] = flattenNetworkAdapterData(networkAdapter)
 		}
 
-		return networkAdapters
+		return data
 	}
 
 	return make([]interface{}, 0)
 }
 
-func flattenOSNetworkAdapterData(osNetworkAdapter *client.NetworkAdapter) interface{} {
-	networkAdapter := make(map[string]interface{})
+func flattenNetworkAdapterData(networkAdapter *client.NetworkAdapter) interface{} {
+	data := make(map[string]interface{})
 
-	networkAdapter["id"] = osNetworkAdapter.ID
-	networkAdapter["name"] = osNetworkAdapter.Name
-	networkAdapter["network_id"] = osNetworkAdapter.NetworkId
-	networkAdapter["type"] = osNetworkAdapter.Type
-	networkAdapter["mac_type"] = osNetworkAdapter.MacType
-	networkAdapter["mac_address"] = osNetworkAdapter.MacAddress
-	networkAdapter["connected"] = osNetworkAdapter.Connected
-	networkAdapter["auto_connect"] = osNetworkAdapter.AutoConnect
+	data["id"] = networkAdapter.ID
+	data["name"] = networkAdapter.Name
+	data["network_id"] = networkAdapter.NetworkId
+	data["type"] = networkAdapter.Type
+	data["mac_type"] = networkAdapter.MacType
+	data["mac_address"] = networkAdapter.MacAddress
+	data["connected"] = networkAdapter.Connected
+	data["auto_connect"] = networkAdapter.AutoConnect
 
-	return networkAdapter
+	return data
 }

@@ -305,11 +305,15 @@ data "cloudtemple_compute_content_library_item" "foo" {
 }
 
 data "cloudtemple_compute_datastore" "foo" {
-	name = "ds001-t0001-r-stw1-data13-th3s"
+  name = "ds001-t0001-r-stw1-data13-th3s"
 }
 
 data "cloudtemple_compute_network" "foo" {
   name = "LAN-dvs-001"
+}
+
+data "cloudtemple_compute_network" "bar" {
+  name = "LAN1"
 }
 
 resource "cloudtemple_compute_virtual_machine" "content-library-deployed" {
@@ -320,10 +324,29 @@ resource "cloudtemple_compute_virtual_machine" "content-library-deployed" {
 
   datacenter_id                = "%s"
   host_cluster_id              = "%s"
-  datastore_id          			 = "88fb9089-cf33-47f0-938a-fe792f4a9039"
+  datastore_id                 = "88fb9089-cf33-47f0-938a-fe792f4a9039"
+
+  guest_operating_system_moref = "centos8_64Guest"
+
+  os_disk {
+    capacity = 25 * 1024 * 1024 * 1024
+    disk_mode = "independent_persistent"
+  }
+
+  network_adapter {
+    network_id   = data.cloudtemple_compute_network.foo.id
+    type         = "E1000"
+    mac_type     = "MANUAL"
+    mac_address  = "00:50:56:83:84:61"
+  }
+
+  network_adapter {
+    network_id   = data.cloudtemple_compute_network.bar.id
+    type         = "VMXNET3"
+  }
 
   tags = {
-		"environment" = "cloned-from-content-library"
+    "environment" = "cloned-from-content-library"
   }
 }
 `

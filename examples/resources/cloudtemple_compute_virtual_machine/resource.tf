@@ -92,8 +92,9 @@ resource "cloudtemple_compute_virtual_machine" "content-library" {
     capacity = 25 * 1024 * 1024 * 1024
   }
 
-  os_network_adapter {
+  network_adapter {
     network_id = data.cloudtemple_compute_network.vlan.id
+    type       = "VMXNET3"
   }
 
   tags = {

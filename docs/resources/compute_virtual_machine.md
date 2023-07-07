@@ -128,8 +128,9 @@ resource "cloudtemple_compute_virtual_machine" "content-library" {
     capacity = 25 * 1024 * 1024 * 1024
   }
 
-  os_network_adapter {
+  network_adapter {
     network_id = data.cloudtemple_compute_network.vlan.id
+    type       = "VMXNET3"
   }
 
   tags = {
@@ -163,9 +164,10 @@ resource "cloudtemple_compute_virtual_machine" "content-library" {
 - `host_id` (String) The host to start the virtual machine on.
 - `memory` (Number) The quantity of memory to start the virtual machine with.
 - `memory_hot_add_enabled` (Boolean)
+- `network_adapter` (Block List) Network adapters to create on the virtual machine. (see [below for nested schema](#nestedblock--network_adapter))
+- `network_adapter_managed` (Boolean) Manage network adapters for the virtual machine (disable to prevent conflicts with `cloudtemple_compute_network_adapter` resources).
 - `num_cores_per_socket` (Number)
 - `os_disk` (Block List) OS disks created from content lib item deployment or virtual machine clone. (see [below for nested schema](#nestedblock--os_disk))
-- `os_network_adapter` (Block List) OS network adapters created from content lib item deployment or virtual machine clone. (see [below for nested schema](#nestedblock--os_network_adapter))
 - `power_state` (String) Whether to start the virtual machine.
 - `tags` (Map of String) The tags to attach to the virtual machine.
 
@@ -194,6 +196,27 @@ resource "cloudtemple_compute_virtual_machine" "content-library" {
 - `tools_version` (Number)
 - `triggered_alarms` (List of Object) (see [below for nested schema](#nestedatt--triggered_alarms))
 
+<a id="nestedblock--network_adapter"></a>
+### Nested Schema for `network_adapter`
+
+Required:
+
+- `network_id` (String)
+- `type` (String)
+
+Optional:
+
+- `auto_connect` (Boolean)
+- `connected` (Boolean)
+- `mac_address` (String)
+- `mac_type` (String)
+
+Read-Only:
+
+- `id` (String) The ID of this resource.
+- `name` (String)
+
+
 <a id="nestedblock--os_disk"></a>
 ### Nested Schema for `os_disk`
 
@@ -216,24 +239,6 @@ Read-Only:
 - `name` (String)
 - `native_id` (String)
 - `provisioning_type` (String)
-
-
-<a id="nestedblock--os_network_adapter"></a>
-### Nested Schema for `os_network_adapter`
-
-Optional:
-
-- `auto_connect` (Boolean)
-- `connected` (Boolean)
-- `mac_address` (String)
-- `mac_type` (String)
-- `network_id` (String)
-
-Read-Only:
-
-- `id` (String) The ID of this resource.
-- `name` (String)
-- `type` (String)
 
 
 <a id="nestedatt--boot_options"></a>
